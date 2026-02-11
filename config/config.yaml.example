@@ -1,0 +1,42 @@
+# Database Configuration (SQLite)
+database:
+  type: "sqlite"
+  path: "./data/phonepe_pulse.db"
+
+# Data Source
+data_source:
+  github_repo: "https://github.com/PhonePe/pulse.git"
+  local_path: "./data/raw/pulse"
+  branch: "master"
+
+# ETL Configuration
+etl:
+  batch_size: 1000
+  log_level: "INFO"
+  skip_errors: false
+  
+# Dashboard Configuration
+dashboard:
+  title: "PhonePe Pulse Analytics"
+  page_icon: "📊"
+  layout: "wide"
+  theme: "light"
+  cache_ttl: 3600  # Cache time in seconds
+
+# Business Cases (Selected 5)
+business_cases:
+  - id: 1
+    name: "Decoding Transaction Dynamics"
+    enabled: true
+  - id: 2
+    name: "Device Dominance & User Engagement"
+    enabled: true
+  - id: 4
+    name: "Transaction Analysis for Market Expansion"
+    enabled: true
+  - id: 5
+    name: "User Engagement and Growth Strategy"
+    enabled: true
+  - id: 7
+    name: "Transaction Analysis Across States and Districts"
+    enabled: true
