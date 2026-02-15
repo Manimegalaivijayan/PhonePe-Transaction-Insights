@@ -1,4 +1,5 @@
 # PhonePe Transaction Insights
+<img width="1916" height="964" alt="image" src="https://github.com/user-attachments/assets/85f9b7b6-96e0-471c-a3b0-bfd93dd1e869" />
 
 A comprehensive analytics platform for PhonePe transaction data. This project provides interactive visualizations and deep-dive analysis into digital payment patterns, device engagement, user trends, and market expansion opportunities across India.
 
@@ -293,36 +294,8 @@ Database schema is defined in `sql/schema_sqlite.sql` with tables for:
 
 See [SQL README](sql/README.md) for detailed schema documentation.
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add AmazingFeature'`)
-4. Push to branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project uses PhonePe Pulse data. See [LICENSE](data/raw/pulse/LICENSE) for data usage terms.
-
 ## 👤 Author
 
 **Manimegalai V**
-
-## 📞 Support
-
-For issues or questions:
-1. Check existing issues in the repository
-2. Create a new issue with detailed description
-3. Include relevant screenshots or error logs
-
-## 🎓 Learning Resources
-
-- [Streamlit Documentation](https://docs.streamlit.io/)
-- [Plotly Python](https://plotly.com/python/)
-- [Pandas Documentation](https://pandas.pydata.org/docs/)
-- [SQLite Tutorial](https://www.sqlite.org/cli.html)
-
----
 
 **Last Updated**: February 2026
