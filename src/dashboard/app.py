@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from pathlib import Path
 import sys
+import re
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -31,6 +32,270 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+def _apply_hover_precision(fig):
+    """Apply consistent 2-decimal hover formatting across Plotly charts."""
+    if fig is None or not hasattr(fig, 'data'):
+        return fig
+
+    def is_year_like(values):
+        if values is None:
+            return False
+        try:
+            series = pd.Series(values).dropna()
+            if series.empty:
+                return False
+
+            numeric = pd.to_numeric(series, errors='coerce').dropna()
+            if numeric.empty or len(numeric) != len(series):
+                return False
+
+            numeric_values = [float(value) for value in numeric.tolist()]
+            is_integer_like = all(abs(value - round(value)) < 1e-9 for value in numeric_values)
+            is_year_range = all(1900 <= value <= 2100 for value in numeric_values)
+            return bool(is_integer_like and is_year_range)
+        except Exception:
+            return False
+
+    axis_updates = {}
+
+    def get_layout_axis_key(axis_ref, axis_prefix):
+        if axis_ref in (None, axis_prefix):
+            return f"{axis_prefix}axis"
+        return f"{axis_prefix}axis{axis_ref.replace(axis_prefix, '')}"
+
+    for trace in fig.data:
+        x_values = getattr(trace, 'x', None)
+        y_values = getattr(trace, 'y', None)
+
+        if is_year_like(x_values):
+            x_ref = getattr(trace, 'xaxis', 'x')
+            x_key = get_layout_axis_key(x_ref, 'x')
+            axis_updates[x_key] = {
+                'type': 'linear',
+                'tickmode': 'linear',
+                'dtick': 1,
+                'tickformat': 'd',
+                'hoverformat': 'd'
+            }
+
+        if is_year_like(y_values):
+            y_ref = getattr(trace, 'yaxis', 'y')
+            y_key = get_layout_axis_key(y_ref, 'y')
+            axis_updates[y_key] = {
+                'type': 'linear',
+                'tickmode': 'linear',
+                'dtick': 1,
+                'tickformat': 'd',
+                'hoverformat': 'd'
+            }
+
+    if axis_updates:
+        try:
+            fig.update_layout(**axis_updates)
+        except Exception:
+            pass
+
+    try:
+        fig.update_layout(
+            xaxis_hoverformat='.2f',
+            yaxis_hoverformat='.2f',
+            yaxis2_hoverformat='.2f'
+        )
+    except Exception:
+        pass
+
+    for trace in fig.data:
+        trace_type = getattr(trace, 'type', '')
+        existing_hovertemplate = getattr(trace, 'hovertemplate', None)
+
+        if existing_hovertemplate not in (None, ''):
+            continue
+
+        if trace_type in {'bar', 'scatter', 'scattergl', 'histogram', 'box', 'violin'}:
+            trace.hovertemplate = "%{x}<br>%{y:.2f}<extra>%{fullData.name}</extra>"
+        elif trace_type in {'pie', 'sunburst', 'treemap', 'funnelarea'}:
+            trace.hovertemplate = "%{label}<br>%{value:.2f}<br>%{percent}<extra></extra>"
+        elif trace_type in {'choropleth', 'choroplethmapbox'}:
+            trace.hovertemplate = "%{location}<br>%{z:.2f}<extra></extra>"
+        elif trace_type == 'heatmap':
+            trace.hovertemplate = "x=%{x}<br>y=%{y}<br>value=%{z:.2f}<extra></extra>"
+
+    if axis_updates:
+        try:
+            fig.update_layout(**axis_updates)
+        except Exception:
+            pass
+
+    return fig
+
+
+def _safe_numeric_round(values, digits=2):
+    """Safely round numeric-like pandas values, coercing object dtypes to numeric."""
+    numeric_values = pd.to_numeric(values, errors='coerce')
+    return numeric_values.round(digits)
+
+
+def _standardize_axis_title(title_text):
+    """Standardize axis titles across charts for consistent naming."""
+    if title_text is None:
+        return None
+
+    normalized = ' '.join(str(title_text).replace('_', ' ').strip().lower().split())
+    if not normalized:
+        return title_text
+
+    title_map = {
+        'year': 'Year',
+        'quarter': 'Quarter',
+        'users': 'Registered Users',
+        'total users': 'Registered Users',
+        'registered users': 'Registered Users',
+        'transactions': 'Transactions',
+        'total transactions': 'Transactions',
+        'avg transactions': 'Average Transactions',
+        'growth (%)': 'Growth Rate (%)',
+        'growth rate (%)': 'Growth Rate (%)',
+        'qoq growth (%)': 'Growth Rate (%)',
+        'avg growth (%)': 'Average Growth Rate (%)',
+        'market share (%)': 'Market Share (%)',
+        'avg amount': 'Average Amount (₹)',
+        'avg amount (₹)': 'Average Amount (₹)',
+        'amount (billions ₹)': 'Amount (₹ Billions)',
+        'trans/user': 'Transactions per User',
+        'cumulative share (%)': 'Cumulative Share (%)',
+        'individual share (%)': 'Individual Share (%)'
+    }
+
+    return title_map.get(normalized, title_text)
+
+
+def _standardize_chart_title(title_text):
+    """Standardize chart titles across the dashboard for consistent phrasing."""
+    if title_text is None:
+        return None
+
+    normalized = ' '.join(str(title_text).replace('_', ' ').strip().lower().split())
+    if not normalized:
+        return title_text
+
+    if normalized.startswith('top 5 device brands across top 10 states'):
+        return 'Top 5 Device Brands Across Top 10 States'
+    if normalized.startswith('device preference by region (top 5 brands across top 10 states)'):
+        return 'Device Preference by Region (Top 5 Brands Across Top 10 States)'
+    if normalized.startswith('top 10 states by total users'):
+        return 'Top 10 States by Registered Users'
+    if normalized.startswith('brand diversity vs user base'):
+        return 'Brand Diversity vs Registered User Base'
+    if normalized.startswith('top 15 states by transaction volume'):
+        return 'Top 15 States by Transaction Volume'
+    if normalized.startswith('top 15 states by transaction amount'):
+        return 'Top 15 States by Transaction Amount (₹ Billions)'
+    if normalized.startswith('top 10 states by transaction volume'):
+        return 'Top 10 States by Transaction Volume'
+    if normalized.startswith('quarter-over-quarter growth rate'):
+        return 'Quarter-over-Quarter Growth Rate (%)'
+    if normalized.startswith('yoy growth rate by transaction type'):
+        return str(title_text).replace('YoY', 'Year-over-Year')
+
+    return title_text
+
+
+def _standardize_legend_title(title_text):
+    """Standardize legend titles across charts."""
+    if title_text is None:
+        return None
+
+    normalized = ' '.join(str(title_text).replace('_', ' ').strip().lower().split())
+    if not normalized:
+        return title_text
+
+    title_map = {
+        'brand': 'Brand',
+        'transaction type': 'Transaction Type',
+        'transaction_type': 'Transaction Type',
+        'trend': 'Trend',
+        'metric': 'Metric',
+        'type': 'Type',
+        'state': 'State'
+    }
+    return title_map.get(normalized, title_text)
+
+
+def _normalize_state_like_text(label_text):
+    """Normalize raw state-like labels (e.g., jammu-&-kashmir) for display."""
+    if label_text is None:
+        return label_text
+
+    text = str(label_text)
+    state_year_match = re.match(r'^(.*)\s\((\d{4})\)$', text)
+    if state_year_match:
+        state_part = state_year_match.group(1)
+        year_part = state_year_match.group(2)
+        normalized_state = normalize_state_name(state_part)
+        return f"{normalized_state} ({year_part})"
+
+    looks_state_like = ('-' in text) or ('&' in text) or text.islower()
+    if looks_state_like:
+        return normalize_state_name(text)
+
+    return label_text
+
+
+_streamlit_plotly_chart = st.plotly_chart
+
+
+def plotly_chart_with_precision(fig, *args, **kwargs):
+    """Wrapper to enforce 2-decimal precision in hover values for all charts."""
+    fig = _apply_hover_precision(fig)
+
+    axis_layout_updates = {}
+    for axis_name in ['xaxis', 'xaxis2', 'yaxis', 'yaxis2']:
+        axis_obj = getattr(fig.layout, axis_name, None)
+        if axis_obj and getattr(axis_obj, 'title', None):
+            current_title = axis_obj.title.text
+            standardized_title = _standardize_axis_title(current_title)
+            if standardized_title != current_title:
+                axis_layout_updates[axis_name] = {'title': standardized_title}
+
+    if axis_layout_updates:
+        fig.update_layout(**axis_layout_updates)
+
+    if getattr(fig.layout, 'title', None):
+        current_title = fig.layout.title.text
+        standardized_title = _standardize_chart_title(current_title)
+        if standardized_title != current_title:
+            fig.update_layout(title=standardized_title)
+
+    if getattr(fig.layout, 'legend', None) and getattr(fig.layout.legend, 'title', None):
+        current_legend_title = fig.layout.legend.title.text
+        standardized_legend_title = _standardize_legend_title(current_legend_title)
+        if standardized_legend_title != current_legend_title:
+            fig.update_layout(legend_title_text=standardized_legend_title)
+
+    for trace in fig.data:
+        if getattr(trace, 'name', None):
+            normalized_name = _normalize_state_like_text(trace.name)
+            if normalized_name != trace.name:
+                trace.name = normalized_name
+
+        if hasattr(trace, 'x') and trace.x is not None:
+            x_values = list(trace.x)
+            normalized_x = [_normalize_state_like_text(value) for value in x_values]
+            if normalized_x != x_values:
+                trace.x = normalized_x
+
+        if hasattr(trace, 'y') and trace.y is not None:
+            y_values = list(trace.y)
+            normalized_y = [_normalize_state_like_text(value) for value in y_values]
+            if normalized_y != y_values:
+                trace.y = normalized_y
+
+    return _streamlit_plotly_chart(fig, *args, **kwargs)
+
+
+st.plotly_chart = plotly_chart_with_precision
 
 # Custom CSS
 st.markdown("""
@@ -775,10 +1040,18 @@ def main():
         
         # Filters
         st.markdown("### Filters")
+
+        years_query = """
+        SELECT DISTINCT year
+        FROM aggregated_transaction
+        ORDER BY year DESC
+        """
+        years_df = qe.execute_query(conn, years_query)
+        year_options = ["All"] + [str(int(year)) for year in years_df['year'].dropna().tolist()]
         
         year_filter = st.selectbox(
             "Year",
-            ["All", "2024", "2023", "2022"],
+            year_options,
             index=0
         )
         
@@ -860,7 +1133,8 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     """, unsafe_allow_html=True)
     
     # Get metrics with filters
-    state_condition = f"AND state = '{state_filter}'" if state_filter != "All" else "AND state = 'All India'"
+    state_condition = f"AND state = '{state_filter}'" if state_filter != "All India" else "AND state = 'All India'"
+    state_scope_condition = f"AND state = '{state_filter}'" if state_filter != "All India" else "AND state != 'All India'"
     year_condition = f"AND year = {year_filter}" if year_filter != "All" else ""
     quarter_condition = f"AND quarter = {quarter_filter}" if quarter_filter != "All" else ""
     
@@ -897,7 +1171,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     if len(growth_df) >= 2:
         latest = growth_df.iloc[0]['yearly_trans']
         previous = growth_df.iloc[1]['yearly_trans']
-        growth_pct = round((latest - previous) * 100.0 / previous, 1)
+        growth_pct = round((latest - previous) * 100.0 / previous, 2)
     else:
         growth_pct = 0
     
@@ -906,14 +1180,14 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     with col1:
         st.metric(
             label="🔢 Total Transactions",
-            value=f"{metrics_df.iloc[0]['total_transactions'] / 1e9:.1f}B",
+            value=f"{metrics_df.iloc[0]['total_transactions'] / 1e9:.2f}B",
             delta=f"+{growth_pct}% YoY"
         )
     
     with col2:
         st.metric(
             label="💰 Total Amount",
-            value=f"₹{metrics_df.iloc[0]['total_amount_trillions']:.1f}T",
+            value=f"₹{metrics_df.iloc[0]['total_amount_trillions']:.2f}T",
             delta="Growing"
         )
     
@@ -946,7 +1220,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
         SUM(transaction_count) as total_transactions,
         ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
     FROM aggregated_transaction
-    WHERE 1=1 {state_condition} {quarter_condition}
+    WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
     GROUP BY year
     ORDER BY year
     """
@@ -1076,13 +1350,13 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     </h2>
     """, unsafe_allow_html=True)
     
-    top_states_query = """
+    top_states_query = f"""
     SELECT 
         state,
         SUM(transaction_count) as total_transactions,
         ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
     FROM aggregated_transaction
-    WHERE state != 'All India' AND year >= 2022
+    WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
     GROUP BY state
     ORDER BY total_transactions DESC
     LIMIT 15
@@ -1159,7 +1433,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     bv_districts_query = f"""
     SELECT COUNT(DISTINCT district) as total_districts
     FROM map_transaction
-    WHERE state != 'All India' {year_condition} {quarter_condition}
+    WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
     """
     
     bv_user_query = f"""
@@ -1185,7 +1459,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     bv_growth = qe.execute_query(conn, bv_growth_query)
     
     if len(bv_growth) >= 2:
-        yoy_growth = round((bv_growth.iloc[0]['yearly_trans'] - bv_growth.iloc[1]['yearly_trans']) * 100.0 / bv_growth.iloc[1]['yearly_trans'], 1)
+        yoy_growth = round((bv_growth.iloc[0]['yearly_trans'] - bv_growth.iloc[1]['yearly_trans']) * 100.0 / bv_growth.iloc[1]['yearly_trans'], 2)
     else:
         yoy_growth = 0
     
@@ -1206,7 +1480,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
             "icon": "🛡️",
             "title": "Fraud Detection",
             "description": "Analyze transaction patterns to spot and prevent fraudulent activities.",
-            "metric": f"{bv_metrics['total_trans']/1e9:.1f}B Transactions",
+            "metric": f"{bv_metrics['total_trans']/1e9:.2f}B Transactions",
             "details": [
                 "Monitor anomalous transaction patterns in real-time",
                 "Identify suspicious behavioral changes",
@@ -1389,18 +1663,18 @@ def show_business_case(case_id, case_data, conn, year_filter, quarter_filter, st
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "📉 Trends", "🗺️ Geographic", "💡 Insights"])
     
     with tab1:
-        show_overview_section(case_id, conn, year_filter, state_filter)
+        show_overview_section(case_id, conn, year_filter, quarter_filter, state_filter)
     
     with tab2:
-        show_trends_section(case_id, conn, year_filter, state_filter)
+        show_trends_section(case_id, conn, year_filter, quarter_filter, state_filter)
     
     with tab3:
-        show_geographical_section(case_id, conn, year_filter)
+        show_geographical_section(case_id, conn, year_filter, quarter_filter, state_filter)
     
     with tab4:
         show_insights_section(case_id, case_data, conn)
 
-def show_overview_section(case_id, conn, year_filter, state_filter):
+def show_overview_section(case_id, conn, year_filter, quarter_filter, state_filter):
     """Display overview metrics"""
     st.markdown("""
     <h3 style="font-size: 1.125rem; font-weight: 600; color: #000000; margin: 1rem 0;">
@@ -1409,6 +1683,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
     """, unsafe_allow_html=True)
     
     year_condition = f"AND year = {year_filter}" if year_filter != "All" else ""
+    quarter_condition = f"AND quarter = {quarter_filter}" if quarter_filter != "All" else ""
     state_condition = f"AND state = '{state_filter}'" if state_filter != "All India" else "AND state = 'All India'"
     
     if case_id == "case_1":
@@ -1418,7 +1693,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             SUM(transaction_count) as total_transactions,
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
         FROM aggregated_transaction
-        WHERE 1=1 {state_condition} {year_condition}
+        WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
         """
         df = qe.execute_query(conn, query)
         
@@ -1431,7 +1706,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             st.metric("🔢 Total Transactions", f"{total_trans / 1e9:.2f}B")
         with col3:
             amount = df.iloc[0]['amount_billions'] if df is not None and not df.empty and df.iloc[0]['amount_billions'] is not None else 0
-            st.metric("💰 Total Amount", f"₹{amount:.0f}B")
+            st.metric("💰 Total Amount", f"₹{amount:.2f}B")
         
         # Question 2: Which transaction types drive the highest value?
         st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
@@ -1450,7 +1725,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions,
             ROUND(SUM(transaction_amount) / SUM(transaction_count), 2) as avg_ticket_size
         FROM aggregated_transaction
-        WHERE 1=1 {state_condition} {year_condition}
+        WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
         GROUP BY transaction_type
         ORDER BY total_count DESC
         """
@@ -1522,7 +1797,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             COUNT(DISTINCT brand) as device_brands,
             SUM(registered_users) as total_users
         FROM aggregated_user
-        WHERE brand != 'Total' {state_condition} {year_condition}
+        WHERE brand != 'Total' {state_condition} {year_condition} {quarter_condition}
         """
         df = qe.execute_query(conn, query)
         
@@ -1533,7 +1808,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
         with col2:
             total_users = df.iloc[0]['total_users']
             if total_users is not None:
-                st.metric("👥 Total Users", f"{total_users / 1e6:.0f}M")
+                st.metric("👥 Total Users", f"{total_users / 1e6:.2f}M")
             else:
                 st.metric("👥 Total Users", "N/A")
         with col3:
@@ -1541,15 +1816,15 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             top_brand_query = f"""
             SELECT MAX(pct) as top_share
             FROM (
-                SELECT ROUND(SUM(registered_users) * 100.0 / (SELECT SUM(registered_users) FROM aggregated_user WHERE brand != 'Total' {state_condition} {year_condition}), 1) as pct
+                SELECT ROUND(SUM(registered_users) * 100.0 / (SELECT SUM(registered_users) FROM aggregated_user WHERE brand != 'Total' {state_condition} {year_condition} {quarter_condition}), 2) as pct
                 FROM aggregated_user
-                WHERE brand != 'Total' {state_condition} {year_condition}
+                WHERE brand != 'Total' {state_condition} {year_condition} {quarter_condition}
                 GROUP BY brand
             )
             """
             top_share_df = qe.execute_query(conn, top_brand_query)
             top_share = top_share_df.iloc[0]['top_share'] if top_share_df is not None and not top_share_df.empty and top_share_df.iloc[0]['top_share'] is not None else 0
-            st.metric("🏆 Top Brand Share", f"{top_share:.1f}%")
+            st.metric("🏆 Top Brand Share", f"{top_share:.2f}%")
         
         # Question 1 & 3: Which device brands dominate and user engagement patterns
         st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
@@ -1560,15 +1835,17 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+        min_users_threshold = 1000000 if state_filter == "All India" else 0
         
         engagement_query = f"""
         SELECT 
             u.brand,
             SUM(u.registered_users) as total_users
         FROM aggregated_user u
-        WHERE u.brand != 'Total' {state_condition} {year_condition}
+        WHERE u.brand != 'Total' {state_condition} {year_condition} {quarter_condition}
         GROUP BY u.brand
-        HAVING SUM(u.registered_users) > 1000000
+        HAVING SUM(u.registered_users) > {min_users_threshold}
         ORDER BY total_users DESC
         LIMIT 15
         """
@@ -1601,7 +1878,7 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             SUM(transaction_count) as total_transactions,
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
         FROM aggregated_transaction
-        WHERE state != 'All India' {year_condition}
+        WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
         """
         df = qe.execute_query(conn, query)
         
@@ -1611,16 +1888,19 @@ def show_overview_section(case_id, conn, year_filter, state_filter):
             st.metric("🗺️ States", f"{states_count}")
         with col2:
             total_transactions = df.iloc[0]['total_transactions'] if df is not None and not df.empty and df.iloc[0]['total_transactions'] is not None else 0
-            st.metric("🔢 Transactions", f"{total_transactions / 1e9:.1f}B")
+            st.metric("🔢 Transactions", f"{total_transactions / 1e9:.2f}B")
         with col3:
             amount_billions = df.iloc[0]['amount_billions'] if df is not None and not df.empty and df.iloc[0]['amount_billions'] is not None else 0
-            st.metric("💰 Amount", f"₹{amount_billions:.0f}B")
+            st.metric("💰 Amount", f"₹{amount_billions:.2f}B")
 
-def show_trends_section(case_id, conn, year_filter, state_filter):
+def show_trends_section(case_id, conn, year_filter, quarter_filter, state_filter):
     """Display trend analysis"""
     st.markdown("#### 📈 Trend Analysis")
     
+    year_condition = f"AND year = {year_filter}" if year_filter != "All" else ""
+    quarter_condition = f"AND quarter = {quarter_filter}" if quarter_filter != "All" else ""
     state_condition = f"AND state = '{state_filter}'" if state_filter != "All India" else "AND state = 'All India'"
+    state_scope_condition = f"AND state = '{state_filter}'" if state_filter != "All India" else "AND state != 'All India'"
     
     if case_id == "case_1":
         # Question 1: What are the year-over-year transaction growth rates?
@@ -1632,6 +1912,12 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
         </div>
         """, unsafe_allow_html=True)
         
+        yoy_year_condition = ""
+        selected_year = None
+        if year_filter != "All":
+            selected_year = int(year_filter)
+            yoy_year_condition = f"AND year IN ({selected_year - 1}, {selected_year})"
+
         growth_query = f"""
         WITH yearly_data AS (
             SELECT 
@@ -1639,7 +1925,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                 year,
                 SUM(transaction_amount) as amount
             FROM aggregated_transaction
-            WHERE 1=1 {state_condition}
+            WHERE 1=1 {state_condition} {yoy_year_condition} {quarter_condition}
             GROUP BY transaction_type, year
         )
         SELECT 
@@ -1652,36 +1938,45 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
         """
         
         df_growth = qe.execute_query(conn, growth_query)
-        df_growth['growth_rate'] = ((df_growth['amount'] - df_growth['prev_year_amount']) / df_growth['prev_year_amount'] * 100).round(1)
+        df_growth['growth_rate'] = _safe_numeric_round(
+            (df_growth['amount'] - df_growth['prev_year_amount']) / df_growth['prev_year_amount'] * 100,
+            2
+        )
         df_growth_filtered = df_growth[df_growth['prev_year_amount'].notna()]
+
+        if selected_year is not None:
+            df_growth_filtered = df_growth_filtered[df_growth_filtered['year'] == selected_year]
         
         col1, col2 = st.columns(2)
         
         with col1:
             # Growth rate comparison
-            latest_year = df_growth_filtered['year'].max()
-            df_latest = df_growth_filtered[df_growth_filtered['year'] == latest_year].sort_values('growth_rate', ascending=False)
+            if df_growth_filtered.empty:
+                st.info("No YoY growth data available for the selected year and filters.")
+            else:
+                latest_year = df_growth_filtered['year'].max()
+                df_latest = df_growth_filtered[df_growth_filtered['year'] == latest_year].sort_values('growth_rate', ascending=False)
             
-            fig = px.bar(
-                df_latest,
-                x='transaction_type',
-                y='growth_rate',
-                title=f'YoY Growth Rate by Transaction Type ({latest_year})',
-                color='growth_rate',
-                color_continuous_scale=['#ef4444', '#fbbf24', '#10b981']
-            )
-            fig.update_layout(
-                plot_bgcolor='#1a1a1a',
-                paper_bgcolor='#1a1a1a',
-                font=dict(color='white', family='Poppins, sans-serif'),
-                title_font=dict(size=14, color='white'),
-                xaxis=dict(showgrid=False, color='white', title=''),
-                yaxis=dict(gridcolor='#333333', color='white', title='Growth Rate (%)'),
-                showlegend=False,
-                margin=dict(l=40, r=20, t=50, b=80)
-            )
-            fig.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+                fig = px.bar(
+                    df_latest,
+                    x='transaction_type',
+                    y='growth_rate',
+                    title=f'YoY Growth Rate by Transaction Type ({latest_year})',
+                    color='growth_rate',
+                    color_continuous_scale=['#ef4444', '#fbbf24', '#10b981']
+                )
+                fig.update_layout(
+                    plot_bgcolor='#1a1a1a',
+                    paper_bgcolor='#1a1a1a',
+                    font=dict(color='white', family='Poppins, sans-serif'),
+                    title_font=dict(size=14, color='white'),
+                    xaxis=dict(showgrid=False, color='white', title=''),
+                    yaxis=dict(gridcolor='#333333', color='white', title='Growth Rate (%)'),
+                    showlegend=False,
+                    margin=dict(l=40, r=20, t=50, b=80)
+                )
+                fig.update_xaxes(tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
         
         # Question 3: Are there seasonal patterns in digital payments?
         st.markdown("""
@@ -1698,7 +1993,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             AVG(transaction_count) as avg_transactions,
             AVG(transaction_amount) as avg_amount
         FROM aggregated_transaction
-        WHERE 1=1 {state_condition}
+        WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
         GROUP BY quarter
         ORDER BY quarter
         """
@@ -1735,7 +2030,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                 transaction_type,
                 SUM(transaction_count) as total_trans
             FROM aggregated_transaction
-            WHERE 1=1 {state_condition}
+            WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
             GROUP BY transaction_type
             ORDER BY total_trans DESC
             """
@@ -1798,7 +2093,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                 transaction_type,
                 ROUND(AVG(transaction_amount), 2) as avg_amount
             FROM aggregated_transaction
-            WHERE 1=1 {state_condition}
+            WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
             GROUP BY transaction_type
             ORDER BY avg_amount DESC
             """
@@ -1840,13 +2135,16 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             SUM(registered_users) as total_users,
             COUNT(DISTINCT state) as states_present
         FROM aggregated_user
-        WHERE brand != 'Total' {state_condition}
+        WHERE brand != 'Total' {state_condition} {year_condition} {quarter_condition}
         GROUP BY brand
         ORDER BY total_users DESC
         LIMIT 15
         """
         df_brands = qe.execute_query(conn, brand_query)
-        df_brands['market_share'] = (df_brands['total_users'] / df_brands['total_users'].sum() * 100).round(2)
+        df_brands['market_share'] = _safe_numeric_round(
+            df_brands['total_users'] / df_brands['total_users'].sum() * 100,
+            2
+        )
         
         col1, col2 = st.columns(2)
         
@@ -1908,7 +2206,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             brand,
             SUM(registered_users) as users
         FROM aggregated_user
-        WHERE brand != 'Total' {state_condition}
+        WHERE brand != 'Total' {state_condition} {year_condition} {quarter_condition}
         GROUP BY year, brand
         ORDER BY year, users DESC
         """
@@ -1934,50 +2232,6 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             yaxis=dict(gridcolor='#333333', color='white'),
             legend=dict(font=dict(color='white'), title_text=''),
             margin=dict(l=40, r=20, t=50, b=40)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Question 2: How does device preference vary by region?
-        st.markdown("""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 0.75rem 1rem; border-radius: 8px; margin: 1.5rem 0 1rem 0;">
-            <p style="margin: 0; color: #000000; font-weight: 600; font-size: 1rem;">
-                ❓ Question 2: How does device preference vary by region?
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        regional_query = f"""
-        SELECT 
-            state,
-            brand,
-            SUM(registered_users) as users
-        FROM aggregated_user
-        WHERE brand != 'Total' AND state != 'All India'
-        GROUP BY state, brand
-        """
-        df_regional = qe.execute_query(conn, regional_query)
-        
-        # Get top brand per state
-        idx = df_regional.groupby('state')['users'].idxmax()
-        df_top_brand_state = df_regional.loc[idx].sort_values('users', ascending=False).head(15)
-        
-        fig = px.bar(
-            df_top_brand_state,
-            x='state',
-            y='users',
-            color='brand',
-            title='Leading Device Brand by Top 15 States',
-            labels={'users': 'Users', 'state': 'State'}
-        )
-        fig.update_layout(
-            plot_bgcolor='#1a1a1a',
-            paper_bgcolor='#1a1a1a',
-            font=dict(color='white', family='Poppins, sans-serif'),
-            title_font=dict(size=14, color='white'),
-            xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
-            yaxis=dict(gridcolor='#333333', color='white'),
-            legend=dict(font=dict(color='white'), title_text='Brand'),
-            margin=dict(l=40, r=20, t=50, b=100)
         )
         st.plotly_chart(fig, use_container_width=True)
     
@@ -2015,7 +2269,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             SUM(transaction_count) as transactions,
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
         FROM aggregated_transaction
-        WHERE state != 'All India'
+        WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY year, quarter
         ORDER BY year, quarter
         """
@@ -2024,7 +2278,10 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
         
         # Calculate QoQ growth
         df['prev_trans'] = df['transactions'].shift(1)
-        df['qoq_growth'] = ((df['transactions'] - df['prev_trans']) / df['prev_trans'] * 100).round(1)
+        df['qoq_growth'] = _safe_numeric_round(
+            (df['transactions'] - df['prev_trans']) / df['prev_trans'] * 100,
+            2
+        )
         
         col1, col2 = st.columns(2)
         
@@ -2084,14 +2341,14 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             </div>
             """, unsafe_allow_html=True)
             
-            emerging_query = """
+            emerging_query = f"""
             WITH yearly_state AS (
                 SELECT 
                     state,
                     year,
                     SUM(transaction_count) as transactions
                 FROM aggregated_transaction
-                WHERE state != 'All India'
+                WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
                 GROUP BY state, year
             ),
             growth_calc AS (
@@ -2126,16 +2383,26 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
+                    df_emerging['state_name'] = df_emerging['state'].apply(normalize_state_name)
                     fig = px.scatter(
                         df_emerging,
                         x='latest_volume',
                         y='avg_growth_rate',
                         size='latest_volume',
                         color='avg_growth_rate',
-                        hover_data=['state'],
+                        hover_name='state_name',
+                        hover_data={
+                            'state': False,
+                            'state_name': False,
+                            'latest_volume': ':.2f',
+                            'avg_growth_rate': ':.2f'
+                        },
                         title='Emerging Markets: High Growth + Moderate Volume',
                         labels={'latest_volume': 'Current Transaction Volume', 'avg_growth_rate': 'Avg Growth Rate (%)'},
                         color_continuous_scale='Viridis'
+                    )
+                    fig.update_traces(
+                        hovertemplate='<b>%{hovertext}</b><br>Volume: %{x:.2f}<br>Avg Growth: %{y:.2f}%<extra></extra>'
                     )
                     fig.update_layout(
                         plot_bgcolor='#1a1a1a',
@@ -2147,15 +2414,36 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                         margin=dict(l=40, r=20, t=50, b=40)
                     )
                     st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("""
+                    <div style="background: #f8fafc; border-left: 3px solid #10b981; padding: 0.75rem 0.9rem; border-radius: 6px; margin-top: 0.75rem;">
+                        <p style="color: #111827; font-size: 0.85rem; margin: 0; line-height: 1.5;">
+                            <strong>How to read:</strong> top-right bubbles indicate stronger emerging markets (higher growth with higher current volume),
+                            while top-left bubbles are early-stage high-growth opportunities.
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
                 
                 with col2:
                     st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
                     st.markdown("**🎯 Top Emerging Markets:**")
-                    for idx, row in df_emerging.head(8).iterrows():
+                    for rank, row in enumerate(df_emerging.head(8).itertuples(index=False), start=1):
                         st.markdown(f"""
-                        <div style="background: #1f2937; border-left: 3px solid #10b981; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 4px;">
-                            <strong style="color: white;">{normalize_state_name(row['state'])}</strong><br>
-                            <span style="color: #10b981; font-size: 0.9rem;">Growth: {row['avg_growth_rate']:.1f}%</span>
+                        <div style="background: #dcfce7; border-left: 3px solid #10b981; padding: 0.85rem 0.9rem; margin-bottom: 0.55rem; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;">
+                                <div style="min-width: 0;">
+                                    <p style="color: #ffffff; font-size: 0.75rem; margin: 0;">Rank #{rank}</p>
+                                    <p style="color: #ffffff; font-size: 0.95rem; font-weight: 600; margin: 0.2rem 0 0 0; word-break: break-word;">
+                                        {normalize_state_name(row.state)}
+                                    </p>
+                                </div>
+                                <div style="text-align: right; white-space: nowrap;">
+                                    <p style="color: #10b981; font-size: 0.85rem; font-weight: 600; margin: 0;">
+                                        {float(row.avg_growth_rate):.2f}%
+                                    </p>
+                                    <p style="color: #ffffff; font-size: 0.72rem; margin: 0.15rem 0 0 0;">Avg Growth</p>
+                                </div>
+                            </div>
                         </div>
                         """, unsafe_allow_html=True)
             else:
@@ -2171,13 +2459,19 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             </div>
             """, unsafe_allow_html=True)
             
+            user_growth_year_condition = year_condition
+            selected_growth_year = None
+            if year_filter != "All":
+                selected_growth_year = int(year_filter)
+                user_growth_year_condition = f"AND year IN ({selected_growth_year - 1}, {selected_growth_year})"
+
             retention_query = f"""
             SELECT 
                 state,
                 year,
                 SUM(registered_users) as users
             FROM aggregated_user
-            WHERE brand = 'Total' AND state != 'All India'
+            WHERE brand = 'Total' {state_scope_condition} {user_growth_year_condition} {quarter_condition}
             GROUP BY state, year
             ORDER BY state, year
             """
@@ -2185,38 +2479,48 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
             
             # Calculate year-over-year user growth
             df_users['prev_users'] = df_users.groupby('state')['users'].shift(1)
-            df_users['user_growth'] = ((df_users['users'] - df_users['prev_users']) / df_users['prev_users'] * 100).round(2)
+            df_users['user_growth'] = _safe_numeric_round(
+                (df_users['users'] - df_users['prev_users']) / df_users['prev_users'] * 100,
+                2
+            )
             
             # Top states by user growth
-            latest_year = df_users['year'].max()
+            latest_year = selected_growth_year if selected_growth_year is not None else df_users['year'].max()
             df_latest_growth = df_users[df_users['year'] == latest_year].dropna(subset=['user_growth']).sort_values('user_growth', ascending=False).head(15)
             
             col1, col2 = st.columns(2)
             
             with col1:
-                fig = px.bar(
-                    df_latest_growth,
-                    x='state',
-                    y='user_growth',
-                    title=f'Top 15 States by User Growth Rate ({latest_year})',
-                    color='user_growth',
-                    color_continuous_scale='Blues'
-                )
-                fig.update_layout(
-                    plot_bgcolor='#1a1a1a',
-                    paper_bgcolor='#1a1a1a',
-                    font=dict(color='white', family='Poppins, sans-serif'),
-                    title_font=dict(size=14, color='white'),
-                    xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
-                    yaxis=dict(gridcolor='#333333', color='white', title='Growth Rate (%)'),
-                    showlegend=False,
-                    margin=dict(l=40, r=20, t=50, b=120)
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                if df_latest_growth.empty:
+                    st.info("No user growth data available for the selected year and filters.")
+                else:
+                    fig = px.bar(
+                        df_latest_growth,
+                        x='state',
+                        y='user_growth',
+                        title=f'Top 15 States by User Growth Rate ({latest_year})',
+                        color='user_growth',
+                        labels={
+                            'state': 'State',
+                            'user_growth': 'User Growth (%)'
+                        },
+                        color_continuous_scale='Blues'
+                    )
+                    fig.update_layout(
+                        plot_bgcolor='#1a1a1a',
+                        paper_bgcolor='#1a1a1a',
+                        font=dict(color='white', family='Poppins, sans-serif'),
+                        title_font=dict(size=14, color='white'),
+                        xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
+                        yaxis=dict(gridcolor='#333333', color='white', title='Growth Rate (%)'),
+                        showlegend=False,
+                        margin=dict(l=40, r=20, t=50, b=120)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
             
             with col2:
                 # Show states with consistent growth
-                consistency_query = """
+                consistency_query = f"""
                 WITH yearly_growth AS (
                     SELECT 
                         state,
@@ -2224,7 +2528,7 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                         SUM(registered_users) as users,
                         LAG(SUM(registered_users)) OVER (PARTITION BY state ORDER BY year) as prev_users
                     FROM aggregated_user
-                    WHERE brand = 'Total' AND state != 'All India'
+                    WHERE brand = 'Total' {state_scope_condition} {year_condition} {quarter_condition}
                     GROUP BY state, year
                 ),
                 growth_rates AS (
@@ -2253,6 +2557,11 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                     y='avg_growth',
                     title='States with Consistent User Growth',
                     color='positive_years',
+                    labels={
+                        'state': 'State',
+                        'avg_growth': 'Average Growth (%)',
+                        'positive_years': 'Positive Years'
+                    },
                     color_continuous_scale='Greens'
                 )
                 fig.update_layout(
@@ -2262,11 +2571,12 @@ def show_trends_section(case_id, conn, year_filter, state_filter):
                     title_font=dict(size=14, color='white'),
                     xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
                     yaxis=dict(gridcolor='#333333', color='white', title='Avg Growth (%)'),
+                    coloraxis_colorbar=dict(title='Positive Years'),
                     margin=dict(l=40, r=20, t=50, b=120)
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-def show_geographical_section(case_id, conn, year_filter):
+def show_geographical_section(case_id, conn, year_filter, quarter_filter, state_filter):
     """Display geographical analysis"""
     st.markdown("#### 🗺️ Geographical Analysis")
     
@@ -2313,6 +2623,8 @@ def show_geographical_section(case_id, conn, year_filter):
         """, unsafe_allow_html=True)
     
     year_condition = f"AND year = {year_filter}" if year_filter != "All" else "AND year >= 2022"
+    quarter_condition = f"AND quarter = {quarter_filter}" if quarter_filter != "All" else ""
+    state_scope_condition = f"AND state = '{state_filter}'" if state_filter != "All India" else "AND state != 'All India'"
     
     # Case-specific geographic analysis
     if case_id == "case_1":
@@ -2324,23 +2636,29 @@ def show_geographical_section(case_id, conn, year_filter):
             SUM(transaction_count) as total_transactions,
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
         FROM aggregated_transaction
-        WHERE state != 'All India' {year_condition}
+        WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY state, transaction_type
         """
         df_detail = qe.execute_query(conn, query)
-        
-        # Get top transaction type per state
-        idx = df_detail.groupby('state')['total_transactions'].idxmax()
-        df_top_type_state = df_detail.loc[idx].sort_values('total_transactions', ascending=False).head(15)
-        
-        st.markdown("**💳 Dominant Payment Type by State**")
+
+        state_totals = (
+            df_detail.groupby('state', as_index=False)['total_transactions']
+            .sum()
+            .sort_values('total_transactions', ascending=False)
+        )
+        top_states = state_totals.head(15)['state'].tolist()
+        df_full_distribution = df_detail[df_detail['state'].isin(top_states)]
+
+        st.markdown("**💳 Full Payment Type Distribution by State**")
         fig = px.bar(
-            df_top_type_state,
+            df_full_distribution,
             x='state',
             y='total_transactions',
             color='transaction_type',
-            title='Leading Transaction Type by Top 15 States',
-            labels={'total_transactions': 'Transactions', 'state': 'State'}
+            barmode='stack',
+            title='Transaction Type Distribution across Top 15 States',
+            labels={'total_transactions': 'Transactions', 'state': 'State', 'transaction_type': 'Type'},
+            category_orders={'state': top_states}
         )
         fig.update_layout(
             plot_bgcolor='#1a1a1a',
@@ -2362,35 +2680,64 @@ def show_geographical_section(case_id, conn, year_filter):
             brand,
             SUM(registered_users) as users
         FROM aggregated_user
-        WHERE brand != 'Total' AND state != 'All India' {year_condition}
+        WHERE brand != 'Total' {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY state, brand
         """
         df_brand_state = qe.execute_query(conn, query)
-        
-        # Top brand per state
-        idx = df_brand_state.groupby('state')['users'].idxmax()
-        df_top_brand = df_brand_state.loc[idx].sort_values('users', ascending=False).head(15)
-        
-        st.markdown("**📱 Market Leader Device Brand by State**")
-        fig = px.bar(
-            df_top_brand,
-            x='state',
-            y='users',
-            color='brand',
-            title='Dominant Device Brand in Top 15 States',
-            labels={'users': 'Users', 'state': 'State'}
-        )
-        fig.update_layout(
-            plot_bgcolor='#1a1a1a',
-            paper_bgcolor='#1a1a1a',
-            font=dict(color='white', family='Poppins, sans-serif'),
-            title_font=dict(size=14, color='white'),
-            xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
-            yaxis=dict(gridcolor='#333333', color='white'),
-            legend=dict(font=dict(color='white'), title_text='Brand'),
-            margin=dict(l=40, r=20, t=50, b=100)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+
+        if df_brand_state is not None and not df_brand_state.empty:
+            top_states = (
+                df_brand_state.groupby('state', as_index=False)['users']
+                .sum()
+                .sort_values('users', ascending=False)
+                .head(10)['state']
+                .tolist()
+            )
+
+            top_brands = (
+                df_brand_state.groupby('brand', as_index=False)['users']
+                .sum()
+                .sort_values('users', ascending=False)
+                .head(5)['brand']
+                .tolist()
+            )
+
+            df_multi_brand = df_brand_state[
+                df_brand_state['state'].isin(top_states) &
+                df_brand_state['brand'].isin(top_brands)
+            ]
+
+            state_order = (
+                df_multi_brand.groupby('state', as_index=False)['users']
+                .sum()
+                .sort_values('users', ascending=False)['state']
+                .tolist()
+            )
+
+            st.markdown("**📱 Device Preference by Region (Multi-Brand View)**")
+            fig = px.bar(
+                df_multi_brand,
+                x='state',
+                y='users',
+                color='brand',
+                barmode='group',
+                title='Top 5 Device Brands across Top 10 States',
+                labels={'users': 'Registered Users', 'state': 'State', 'brand': 'Brand'},
+                category_orders={'state': state_order}
+            )
+            fig.update_layout(
+                plot_bgcolor='#1a1a1a',
+                paper_bgcolor='#1a1a1a',
+                font=dict(color='white', family='Poppins, sans-serif'),
+                title_font=dict(size=14, color='white'),
+                xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
+                yaxis=dict(gridcolor='#333333', color='white', title='Registered Users'),
+                legend=dict(font=dict(color='white'), title_text='Brand'),
+                margin=dict(l=40, r=20, t=50, b=100)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No regional device preference data available for selected filters")
         
         # Brand diversity by state
         brand_diversity = df_brand_state.groupby('state').agg({
@@ -2398,6 +2745,25 @@ def show_geographical_section(case_id, conn, year_filter):
             'users': 'sum'
         }).reset_index()
         brand_diversity.columns = ['state', 'brand_count', 'total_users']
+
+        concentration_df = df_brand_state.copy()
+        state_totals = concentration_df.groupby('state')['users'].sum().rename('state_total')
+        concentration_df = concentration_df.merge(state_totals, on='state', how='left')
+        concentration_df['brand_share_pct'] = _safe_numeric_round(
+            concentration_df['users'] * 100.0 / concentration_df['state_total'],
+            2
+        )
+
+        top_brand_share = concentration_df.groupby('state', as_index=False)['brand_share_pct'].max()
+        top_brand_share.columns = ['state', 'top_brand_share_pct']
+
+        hhi_df = concentration_df.groupby('state', as_index=False)['brand_share_pct'].apply(
+            lambda s: (s ** 2).sum()
+        )
+        hhi_df.columns = ['state', 'hhi']
+
+        brand_diversity = brand_diversity.merge(top_brand_share, on='state', how='left')
+        brand_diversity = brand_diversity.merge(hhi_df, on='state', how='left')
         brand_diversity = brand_diversity.sort_values('total_users', ascending=False).head(15)
         
         col1, col2 = st.columns(2)
@@ -2407,6 +2773,8 @@ def show_geographical_section(case_id, conn, year_filter):
                 # Ensure data types are numeric
                 brand_diversity['total_users'] = pd.to_numeric(brand_diversity['total_users'], errors='coerce')
                 brand_diversity['brand_count'] = pd.to_numeric(brand_diversity['brand_count'], errors='coerce')
+                brand_diversity['top_brand_share_pct'] = pd.to_numeric(brand_diversity['top_brand_share_pct'], errors='coerce')
+                brand_diversity['hhi'] = pd.to_numeric(brand_diversity['hhi'], errors='coerce')
                 brand_diversity = brand_diversity.dropna()
                 
                 if not brand_diversity.empty:
@@ -2415,9 +2783,11 @@ def show_geographical_section(case_id, conn, year_filter):
                         x='total_users',
                         y='brand_count',
                         size='total_users',
-                        hover_data=['state'],
+                        color='top_brand_share_pct',
+                        hover_data=['state', 'top_brand_share_pct', 'hhi'],
                         title='Brand Diversity vs User Base',
-                        labels={'total_users': 'Total Users', 'brand_count': 'Number of Brands'}
+                        labels={'total_users': 'Total Users', 'brand_count': 'Number of Brands', 'top_brand_share_pct': 'Top Brand Share (%)'},
+                        color_continuous_scale='Viridis'
                     )
                     fig.update_layout(
                         plot_bgcolor='#1a1a1a',
@@ -2455,6 +2825,21 @@ def show_geographical_section(case_id, conn, year_filter):
                 margin=dict(l=40, r=20, t=50, b=100)
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        if brand_diversity is not None and not brand_diversity.empty:
+            st.markdown("**📌 Brand Concentration Metrics**")
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+
+            avg_top_share = brand_diversity['top_brand_share_pct'].mean()
+            avg_hhi = brand_diversity['hhi'].mean()
+            most_competitive_state = brand_diversity.sort_values('top_brand_share_pct', ascending=True).iloc[0]['state']
+
+            with metric_col1:
+                st.metric("Top Brand Share (Avg)", f"{avg_top_share:.2f}%")
+            with metric_col2:
+                st.metric("HHI (Avg)", f"{avg_hhi:.2f}")
+            with metric_col3:
+                st.metric("Most Competitive", normalize_state_name(most_competitive_state))
     
     elif case_id == "case_4":
         # Focus on expansion opportunities - penetration and growth potential
@@ -2466,7 +2851,7 @@ def show_geographical_section(case_id, conn, year_filter):
                 ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions,
                 COUNT(DISTINCT year || '-' || quarter) as periods
             FROM aggregated_transaction
-            WHERE state != 'All India' {year_condition}
+            WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
             GROUP BY state
         ),
         user_metrics AS (
@@ -2474,7 +2859,7 @@ def show_geographical_section(case_id, conn, year_filter):
                 state,
                 SUM(registered_users) as total_users
             FROM aggregated_user
-            WHERE brand = 'Total' AND state != 'All India' {year_condition}
+            WHERE brand = 'Total' {state_scope_condition} {year_condition} {quarter_condition}
             GROUP BY state
         )
         SELECT 
@@ -2588,7 +2973,7 @@ def show_geographical_section(case_id, conn, year_filter):
             year,
             SUM(registered_users) as users
         FROM aggregated_user
-        WHERE brand = 'Total' AND state != 'All India' {year_condition}
+        WHERE brand = 'Total' {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY state, year
         """
         df_users = qe.execute_query(conn, query)
@@ -2598,12 +2983,32 @@ def show_geographical_section(case_id, conn, year_filter):
         df_engagement.columns = ['state', 'total_users']
         df_engagement = df_engagement.sort_values('total_users', ascending=False)
         
+        user_growth_year_condition = year_condition
+        selected_growth_year = None
+        if year_filter != "All":
+            selected_growth_year = int(year_filter)
+            user_growth_year_condition = f"AND year IN ({selected_growth_year - 1}, {selected_growth_year})"
+
+        growth_query = f"""
+        SELECT 
+            state,
+            year,
+            SUM(registered_users) as users
+        FROM aggregated_user
+        WHERE brand = 'Total' {state_scope_condition} {user_growth_year_condition} {quarter_condition}
+        GROUP BY state, year
+        """
+        df_users_growth = qe.execute_query(conn, growth_query)
+
         # User growth by state
-        df_users['prev_users'] = df_users.groupby('state')['users'].shift(1)
-        df_users['growth'] = ((df_users['users'] - df_users['prev_users']) / df_users['prev_users'] * 100).round(2)
-        
-        latest_year = df_users['year'].max()
-        df_latest_growth = df_users[df_users['year'] == latest_year].dropna(subset=['growth']).sort_values('growth', ascending=False)
+        df_users_growth['prev_users'] = df_users_growth.groupby('state')['users'].shift(1)
+        df_users_growth['growth'] = _safe_numeric_round(
+            (df_users_growth['users'] - df_users_growth['prev_users']) / df_users_growth['prev_users'] * 100,
+            2
+        )
+
+        latest_year = selected_growth_year if selected_growth_year is not None else df_users_growth['year'].max()
+        df_latest_growth = df_users_growth[df_users_growth['year'] == latest_year].dropna(subset=['growth']).sort_values('growth', ascending=False)
         
         col1, col2 = st.columns(2)
         
@@ -2631,25 +3036,28 @@ def show_geographical_section(case_id, conn, year_filter):
         
         with col2:
             st.markdown(f"**📈 Fastest Growing States ({latest_year})**")
-            fig = px.bar(
-                df_latest_growth.head(15),
-                x='state',
-                y='growth',
-                title=f'Top 15 User Growth Leaders',
-                color='growth',
-                color_continuous_scale='Greens'
-            )
-            fig.update_layout(
-                plot_bgcolor='#1a1a1a',
-                paper_bgcolor='#1a1a1a',
-                font=dict(color='white', family='Poppins, sans-serif'),
-                title_font=dict(size=14, color='white'),
-                xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
-                yaxis=dict(gridcolor='#333333', color='white', title='Growth (%)'),
-                showlegend=False,
-                margin=dict(l=40, r=20, t=50, b=100)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if df_latest_growth.empty:
+                st.info("No user growth data available for the selected year and filters.")
+            else:
+                fig = px.bar(
+                    df_latest_growth.head(15),
+                    x='state',
+                    y='growth',
+                    title=f'Top 15 User Growth Leaders',
+                    color='growth',
+                    color_continuous_scale='Greens'
+                )
+                fig.update_layout(
+                    plot_bgcolor='#1a1a1a',
+                    paper_bgcolor='#1a1a1a',
+                    font=dict(color='white', family='Poppins, sans-serif'),
+                    title_font=dict(size=14, color='white'),
+                    xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
+                    yaxis=dict(gridcolor='#333333', color='white', title='Growth (%)'),
+                    showlegend=False,
+                    margin=dict(l=40, r=20, t=50, b=100)
+                )
+                st.plotly_chart(fig, use_container_width=True)
     
     elif case_id == "case_7":
         # This case specifically needs top states analysis - keep enhanced version
@@ -2659,12 +3067,15 @@ def show_geographical_section(case_id, conn, year_filter):
             SUM(transaction_count) as total_transactions,
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
         FROM aggregated_transaction
-        WHERE state != 'All India' {year_condition}
+        WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY state
         ORDER BY total_transactions DESC
         """
         df_all = qe.execute_query(conn, query)
-        df_all['pct_share'] = (df_all['total_transactions'] / df_all['total_transactions'].sum() * 100).round(2)
+        df_all['pct_share'] = _safe_numeric_round(
+            df_all['total_transactions'] / df_all['total_transactions'].sum() * 100,
+            2
+        )
         
         # Top 10 states with metrics
         st.markdown("**🏆 Top 10 States Performance Dashboard**")
@@ -2683,8 +3094,8 @@ def show_geographical_section(case_id, conn, year_filter):
                             <h4 style="color: #000033; margin: 0.25rem 0; font-weight: 700;">{normalize_state_name(row['state'])}</h4>
                             <p style="color: #001a4d; font-size: 0.85rem; margin: 0.25rem 0; font-weight: 500;">
                                 {format_large_number(row['total_transactions'])} transactions<br>
-                                ₹{row['amount_billions']:.1f}B amount<br>
-                                <span style="color: #004d00; font-weight: 600;">{row['pct_share']:.1f}% market share</span>
+                                ₹{row['amount_billions']:.2f}B amount<br>
+                                <span style="color: #004d00; font-weight: 600;">{row['pct_share']:.2f}% market share</span>
                             </p>
                         </div>
                     </div>
@@ -2693,22 +3104,42 @@ def show_geographical_section(case_id, conn, year_filter):
         
         # Comparison chart
         st.markdown("**📊 Performance Comparison**")
-        fig = px.bar(
+        fig = px.scatter(
             df_top10,
-            x='state',
-            y=['total_transactions', 'amount_billions'],
-            title='Top 10 States: Volume vs Value',
-            barmode='group'
+            x='total_transactions',
+            y='amount_billions',
+            size='pct_share',
+            color='pct_share',
+            hover_name='state',
+            title='Top 10 States: Transaction Volume vs Value',
+            labels={
+                'total_transactions': 'Transactions',
+                'amount_billions': 'Amount (₹ Billions)',
+                'pct_share': 'Market Share (%)'
+            },
+            color_continuous_scale='Blues'
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df_top10['total_transactions'],
+                y=df_top10['amount_billions'],
+                mode='text',
+                text=df_top10['state'].apply(normalize_state_name),
+                textposition='top center',
+                textfont=dict(color='white', size=10),
+                hoverinfo='skip',
+                showlegend=False
+            )
         )
         fig.update_layout(
             plot_bgcolor='#1a1a1a',
             paper_bgcolor='#1a1a1a',
             font=dict(color='white', family='Poppins, sans-serif'),
             title_font=dict(size=14, color='white'),
-            xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
+            xaxis=dict(showgrid=True, gridcolor='#333333', color='white'),
             yaxis=dict(gridcolor='#333333', color='white'),
-            legend=dict(font=dict(color='white'), title_text='Metric'),
-            margin=dict(l=40, r=20, t=50, b=100)
+            coloraxis_colorbar=dict(title='Market Share (%)'),
+            margin=dict(l=40, r=20, t=50, b=40)
         )
         st.plotly_chart(fig, use_container_width=True)
     
@@ -2720,7 +3151,7 @@ def show_geographical_section(case_id, conn, year_filter):
             SUM(transaction_count) as total_transactions,
             ROUND(SUM(transaction_amount) / 1e9, 2) as amount_billions
         FROM aggregated_transaction
-        WHERE state != 'All India' {year_condition}
+        WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY state
         ORDER BY total_transactions DESC
         """
@@ -2758,15 +3189,70 @@ def show_geographical_section(case_id, conn, year_filter):
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+        decline_year_condition = year_condition
+        selected_decline_year = None
+        if year_filter != "All":
+            selected_decline_year = int(year_filter)
+            decline_year_condition = f"AND year IN ({selected_decline_year - 1}, {selected_decline_year})"
         
-        declining_query = """
+        declining_query = f"""
         WITH yearly_state AS (
             SELECT 
                 state,
                 year,
                 SUM(transaction_count) as transactions
             FROM aggregated_transaction
-            WHERE state != 'All India'
+            WHERE 1=1 {state_scope_condition} {decline_year_condition} {quarter_condition}
+            GROUP BY state, year
+        ),
+        growth_calc AS (
+            SELECT 
+                state,
+                year,
+                transactions,
+                LAG(transactions) OVER (PARTITION BY state ORDER BY year) as prev_year_trans
+            FROM yearly_state
+        ),
+        declining_ranked AS (
+            SELECT
+                state,
+                year,
+                transactions,
+                prev_year_trans,
+                ROUND((transactions - prev_year_trans) * 100.0 / prev_year_trans, 2) as growth_rate,
+                ROW_NUMBER() OVER (
+                    PARTITION BY state
+                    ORDER BY ((transactions - prev_year_trans) * 100.0 / prev_year_trans) ASC
+                ) as rn
+            FROM growth_calc
+            WHERE prev_year_trans IS NOT NULL
+        )
+        SELECT 
+            state,
+            year,
+            transactions,
+            prev_year_trans,
+            growth_rate
+        FROM declining_ranked
+        WHERE rn = 1 AND growth_rate < 0
+        ORDER BY growth_rate ASC
+        LIMIT 10
+        """
+        
+        df_declining = qe.execute_query(conn, declining_query)
+        if selected_decline_year is not None and not df_declining.empty:
+            df_declining = df_declining[df_declining['year'] == selected_decline_year]
+        df_negative = df_declining
+
+        decline_heatmap_query = f"""
+        WITH yearly_state AS (
+            SELECT 
+                state,
+                year,
+                SUM(transaction_count) as transactions
+            FROM aggregated_transaction
+            WHERE 1=1 {state_scope_condition} {decline_year_condition} {quarter_condition}
             GROUP BY state, year
         ),
         growth_calc AS (
@@ -2777,56 +3263,168 @@ def show_geographical_section(case_id, conn, year_filter):
                 LAG(transactions) OVER (PARTITION BY state ORDER BY year) as prev_year_trans
             FROM yearly_state
         )
-        SELECT 
+        SELECT
             state,
             year,
-            transactions,
-            prev_year_trans,
             ROUND((transactions - prev_year_trans) * 100.0 / prev_year_trans, 2) as growth_rate
         FROM growth_calc
         WHERE prev_year_trans IS NOT NULL
-        ORDER BY growth_rate ASC
         """
+        df_growth_heatmap = qe.execute_query(conn, decline_heatmap_query)
         
-        df_declining = qe.execute_query(conn, declining_query)
-        df_negative = df_declining[df_declining['growth_rate'] < 0].head(10)
-        
-        if not df_negative.empty:
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                df_negative['state_year'] = df_negative['state'] + ' (' + df_negative['year'].astype(str) + ')'
-                fig = px.bar(
-                    df_negative,
-                    x='state_year',
-                    y='growth_rate',
-                    title='Top 10 States with Negative Growth',
-                    color='growth_rate',
-                    color_continuous_scale='Reds_r'
+        if df_growth_heatmap is not None and not df_growth_heatmap.empty:
+            df_period = df_growth_heatmap.copy()
+
+            if selected_decline_year is not None:
+                analysis_year = selected_decline_year
+                df_period = df_period[df_period['year'] == analysis_year]
+                chart_title = f'All States YoY Growth ({analysis_year})'
+                y_column = 'state_label'
+            else:
+                analysis_year = None
+                chart_title = 'All States YoY Growth (All Years)'
+                df_period['year'] = pd.to_numeric(df_period['year'], errors='coerce')
+                df_period = df_period.dropna(subset=['year'])
+                df_period['year'] = df_period['year'].astype(int)
+                y_column = 'state_year'
+
+            if not df_period.empty:
+                df_period['state_label'] = df_period['state'].apply(normalize_state_name)
+                if analysis_year is None:
+                    df_period['state_year'] = df_period.apply(
+                        lambda row: f"{row['state_label']} ({int(row['year'])})",
+                        axis=1
+                    )
+                df_period['trend'] = df_period['growth_rate'].apply(
+                    lambda value: 'Decline' if value < 0 else ('Growth' if value > 0 else 'Flat')
                 )
-                fig.update_layout(
-                    plot_bgcolor='#1a1a1a',
-                    paper_bgcolor='#1a1a1a',
-                    font=dict(color='white', family='Poppins, sans-serif'),
-                    title_font=dict(size=14, color='white'),
-                    xaxis=dict(tickangle=-45, showgrid=False, color='white', title=''),
-                    yaxis=dict(gridcolor='#333333', color='white', title='Growth Rate (%)'),
-                    showlegend=False,
-                    margin=dict(l=40, r=20, t=50, b=120)
+                df_period = df_period.sort_values('growth_rate', ascending=True)
+
+                col1, col2 = st.columns([3, 1])
+
+                with col1:
+                    fig = px.bar(
+                        df_period,
+                        x='growth_rate',
+                        y=y_column,
+                        orientation='h',
+                        color='trend',
+                        title=chart_title,
+                        labels={'growth_rate': 'YoY Growth Rate (%)', y_column: 'State'},
+                        color_discrete_map={
+                            'Decline': '#ef4444',
+                            'Growth': '#22c55e',
+                            'Flat': '#94a3b8'
+                        }
+                    )
+                    fig.add_vline(x=0, line_dash='dash', line_color='white', opacity=0.6)
+                    fig.update_layout(
+                        plot_bgcolor='#1a1a1a',
+                        paper_bgcolor='#1a1a1a',
+                        font=dict(color='white', family='Poppins, sans-serif'),
+                        title_font=dict(size=14, color='white'),
+                        xaxis=dict(showgrid=True, gridcolor='#333333', color='white', title='YoY Growth (%)'),
+                        yaxis=dict(showgrid=False, color='white', title=''),
+                        legend=dict(font=dict(color='white'), title_text='Trend'),
+                        margin=dict(l=40, r=20, t=50, b=40)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    total_states = len(df_period) if analysis_year is None else len(df_period)
+                    declines_count = int((df_period['growth_rate'] < 0).sum())
+                    growth_count = int((df_period['growth_rate'] > 0).sum())
+                    flat_count = int((df_period['growth_rate'] == 0).sum())
+
+                    metric_label = 'State-Year Entries' if analysis_year is None else 'States Analyzed'
+                    st.metric(metric_label, f'{total_states}')
+                    st.metric('Declining States', f'{declines_count}')
+                    st.metric('Growing States', f'{growth_count}')
+                    st.metric('Flat States', f'{flat_count}')
+
+                states_with_decline = (
+                    df_growth_heatmap[df_growth_heatmap['growth_rate'] < 0]
+                    .groupby('state')['growth_rate']
+                    .min()
+                    .sort_values(ascending=True)
+                    .head(12)
+                    .index
+                    .tolist()
                 )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
-                for idx, row in df_negative.head(5).iterrows():
-                    st.markdown(f"""
-                    <div style="background: #2d1f1f; border-left: 3px solid #ef4444; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 4px;">
-                        <strong style="color: white;">{normalize_state_name(row['state'])}</strong><br>
-                        <span style="color: #fca5a5; font-size: 0.9rem;">{row['year']}: {row['growth_rate']:.1f}% decline</span>
-                    </div>
-                    """, unsafe_allow_html=True)
+
+                if states_with_decline:
+                    df_heatmap = df_growth_heatmap[df_growth_heatmap['state'].isin(states_with_decline)].copy()
+                    state_label_map = {state: normalize_state_name(state) for state in states_with_decline}
+                    ordered_labels = [state_label_map[state] for state in states_with_decline]
+                    df_heatmap['state_label'] = df_heatmap['state'].map(state_label_map)
+                    df_heatmap['year'] = pd.to_numeric(df_heatmap['year'], errors='coerce').astype('Int64')
+                    df_heatmap = df_heatmap.dropna(subset=['year'])
+                    df_heatmap['year_label'] = df_heatmap['year'].astype(int).astype(str)
+
+                    year_order = sorted(df_heatmap['year_label'].unique(), key=lambda value: int(value))
+
+                    heatmap_pivot = df_heatmap.pivot(
+                        index='state_label',
+                        columns='year_label',
+                        values='growth_rate'
+                    ).reindex(ordered_labels)
+                    heatmap_pivot = heatmap_pivot.reindex(columns=year_order)
+
+                    fig_heatmap = px.imshow(
+                        heatmap_pivot,
+                        color_continuous_scale='RdYlGn',
+                        aspect='auto',
+                        title='Year-wise Growth Pattern (Declining States)',
+                        labels=dict(x='Year', y='State', color='Growth %')
+                    )
+
+                    negative_text = heatmap_pivot.apply(
+                        lambda row: row.map(
+                            lambda value: f"{value:.2f}%" if pd.notna(value) and value < 0 else ""
+                        ),
+                        axis=1
+                    )
+                    fig_heatmap.update_traces(
+                        text=negative_text.values,
+                        texttemplate='%{text}',
+                        textfont=dict(color='white', size=10)
+                    )
+
+                    negative_points = (
+                        heatmap_pivot.stack()
+                        .reset_index(name='growth_rate')
+                    )
+                    negative_points = negative_points[negative_points['growth_rate'] < 0]
+
+                    if not negative_points.empty:
+                        fig_heatmap.add_trace(
+                            go.Scatter(
+                                x=negative_points['year_label'],
+                                y=negative_points['state_label'],
+                                mode='markers',
+                                marker=dict(
+                                    symbol='square-open',
+                                    size=20,
+                                    color='rgba(0,0,0,0)',
+                                    line=dict(color='#ef4444', width=2)
+                                ),
+                                hoverinfo='skip',
+                                showlegend=False
+                            )
+                        )
+
+                    fig_heatmap.update_layout(
+                        plot_bgcolor='#1a1a1a',
+                        paper_bgcolor='#1a1a1a',
+                        font=dict(color='white', family='Poppins, sans-serif'),
+                        title_font=dict(size=14, color='white'),
+                        margin=dict(l=40, r=20, t=50, b=40)
+                    )
+                    st.plotly_chart(fig_heatmap, use_container_width=True)
+            else:
+                st.info("No year-over-year growth data available for the selected filters.")
         else:
-            st.info("No states showing negative growth in the selected period.")
+            st.info("No year-over-year growth data available for the selected filters.")
     
     # Case 7 specific: Transaction concentration analysis
     if case_id == "case_7":
@@ -2841,8 +3439,14 @@ def show_geographical_section(case_id, conn, year_filter):
         
         # Calculate concentration metrics
         total_trans = df_all['total_transactions'].sum()
-        df_all['cumulative_pct'] = (df_all['total_transactions'].cumsum() / total_trans * 100).round(2)
-        df_all['pct_share'] = (df_all['total_transactions'] / total_trans * 100).round(2)
+        df_all['cumulative_pct'] = _safe_numeric_round(
+            df_all['total_transactions'].cumsum() / total_trans * 100,
+            2
+        )
+        df_all['pct_share'] = _safe_numeric_round(
+            df_all['total_transactions'] / total_trans * 100,
+            2
+        )
         
         # Find states contributing to 80% of transactions
         top_80_count = len(df_all[df_all['cumulative_pct'] <= 80])
@@ -2914,7 +3518,7 @@ def show_geographical_section(case_id, conn, year_filter):
             top3_share = df_all['pct_share'].head(3).sum()
             st.markdown(f"""
             <div style="background: #1f2937; border: 2px solid #667eea; padding: 1.5rem; border-radius: 12px;">
-                <h3 style="color: white; font-size: 2rem; margin: 0;">{top3_share:.1f}%</h3>
+                <h3 style="color: white; font-size: 2rem; margin: 0;">{top3_share:.2f}%</h3>
                 <p style="color: rgba(255,255,255,0.9); font-size: 0.9rem; margin: 0.5rem 0 0 0;">
                     Top 3 states' share
                 </p>
@@ -2937,7 +3541,7 @@ def show_geographical_section(case_id, conn, year_filter):
             st.markdown(f"""
             <div style="background: #cce5ff; border-left: 3px solid #0033cc; padding: 1rem; border-radius: 4px;">
                 <strong style="color: #003366; font-size: 1rem;">Market Leader</strong><br>
-                <span style="color: #004d99; font-size: 0.9rem; font-weight: 500;">{normalize_state_name(df_all.iloc[0]['state'])} leads with {df_all.iloc[0]['pct_share']:.1f}%</span>
+                <span style="color: #004d99; font-size: 0.9rem; font-weight: 500;">{normalize_state_name(df_all.iloc[0]['state'])} leads with {df_all.iloc[0]['pct_share']:.2f}%</span>
             </div>
             """, unsafe_allow_html=True)
         
@@ -2961,7 +3565,7 @@ def show_geographical_section(case_id, conn, year_filter):
             state,
             SUM(transaction_count) as total_transactions
         FROM aggregated_transaction
-        WHERE state != 'All India' {year_condition}
+        WHERE 1=1 {state_scope_condition} {year_condition} {quarter_condition}
         GROUP BY state
         ORDER BY total_transactions DESC
         """
@@ -3093,7 +3697,7 @@ def show_insights_section(case_id, case_data, conn):
         st.markdown(f"""
         <div style="background: #d1fae5; border-left: 4px solid #10b981; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
             <p style="color: #000000; margin: 0; font-weight: 600; font-size: 1rem;">
-                ✓ <strong>Top Category:</strong> {df.iloc[0]['transaction_type']} with ₹{df.iloc[0]['amount_billions']:.0f}B
+                ✓ <strong>Top Category:</strong> {df.iloc[0]['transaction_type']} with ₹{df.iloc[0]['amount_billions']:.2f}B
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -3131,7 +3735,7 @@ def show_insights_section(case_id, case_data, conn):
         st.markdown(f"""
         <div style="background: #d1fae5; border-left: 4px solid #10b981; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
             <p style="color: #000000; margin: 0; font-weight: 600; font-size: 1rem;">
-                ✓ <strong>Leading Brand:</strong> {df.iloc[0]['brand']} with {df.iloc[0]['users'] / 1e6:.0f}M users
+                ✓ <strong>Leading Brand:</strong> {df.iloc[0]['brand']} with {df.iloc[0]['users'] / 1e6:.2f}M users
             </p>
         </div>
         """, unsafe_allow_html=True)

@@ -45,6 +45,9 @@ def execute_query(conn: sqlite3.Connection, query: str) -> pd.DataFrame:
     """
     try:
         df = pd.read_sql_query(query, conn)
+        float_columns = df.select_dtypes(include=['float32', 'float64']).columns
+        if len(float_columns) > 0:
+            df[float_columns] = df[float_columns].round(2)
         logger.info(f"Query executed successfully. Rows returned: {len(df)}")
         return df
     except Exception as e:
