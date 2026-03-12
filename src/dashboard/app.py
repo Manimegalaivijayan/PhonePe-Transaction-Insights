@@ -39,6 +39,37 @@ def _apply_hover_precision(fig):
     if fig is None or not hasattr(fig, 'data'):
         return fig
 
+    def format_value_representation(value):
+        try:
+            numeric_value = float(value)
+        except Exception:
+            return ""
+
+        abs_value = abs(numeric_value)
+        units = [
+            (1e12, 'T'),
+            (1e9, 'B'),
+            (1e6, 'M'),
+            (1e3, 'K')
+        ]
+
+        for threshold, suffix in units:
+            if abs_value >= threshold:
+                return f"{numeric_value / threshold:.2f}{suffix}"
+        return f"{numeric_value:.2f}"
+
+    def is_numeric_list(values):
+        if values is None:
+            return False
+        try:
+            series = pd.Series(values).dropna()
+            if series.empty:
+                return False
+            numeric = pd.to_numeric(series, errors='coerce')
+            return bool(numeric.notna().all())
+        except Exception:
+            return False
+
     def is_year_like(values):
         if values is None:
             return False
@@ -114,13 +145,27 @@ def _apply_hover_precision(fig):
             continue
 
         if trace_type in {'bar', 'scatter', 'scattergl', 'histogram', 'box', 'violin'}:
-            trace.hovertemplate = "%{x}<br>%{y:.2f}<extra>%{fullData.name}</extra>"
+            x_values = getattr(trace, 'x', None)
+            y_values = getattr(trace, 'y', None)
+            x_is_numeric = is_numeric_list(x_values)
+            y_is_numeric = is_numeric_list(y_values)
+
+            if y_is_numeric and not x_is_numeric and y_values is not None:
+                formatted_values = [format_value_representation(value) for value in y_values]
+                trace.customdata = formatted_values
+                trace.hovertemplate = "%{x}<br>Value: %{y:.2f} (%{customdata})<extra>%{fullData.name}</extra>"
+            elif x_is_numeric and not y_is_numeric and x_values is not None:
+                formatted_values = [format_value_representation(value) for value in x_values]
+                trace.customdata = formatted_values
+                trace.hovertemplate = "%{y}<br>Value: %{x:.2f} (%{customdata})<extra>%{fullData.name}</extra>"
+            else:
+                trace.hovertemplate = "%{x}<br>Value: %{y:.2f}<extra>%{fullData.name}</extra>"
         elif trace_type in {'pie', 'sunburst', 'treemap', 'funnelarea'}:
-            trace.hovertemplate = "%{label}<br>%{value:.2f}<br>%{percent}<extra></extra>"
+            trace.hovertemplate = "%{label}<br>Value: %{value:.2f}<br>%{percent}<extra></extra>"
         elif trace_type in {'choropleth', 'choroplethmapbox'}:
-            trace.hovertemplate = "%{location}<br>%{z:.2f}<extra></extra>"
+            trace.hovertemplate = "%{location}<br>Value: %{z:.2f}<extra></extra>"
         elif trace_type == 'heatmap':
-            trace.hovertemplate = "x=%{x}<br>y=%{y}<br>value=%{z:.2f}<extra></extra>"
+            trace.hovertemplate = "x=%{x}<br>y=%{y}<br>Value: %{z:.2f}<extra></extra>"
 
     if axis_updates:
         try:
@@ -135,6 +180,23 @@ def _safe_numeric_round(values, digits=2):
     """Safely round numeric-like pandas values, coercing object dtypes to numeric."""
     numeric_values = pd.to_numeric(values, errors='coerce')
     return numeric_values.round(digits)
+
+
+def _format_compact_value(value, prefix=''):
+    """Format numeric values with dynamic K/M/B/T representation and 2-decimal precision."""
+    try:
+        numeric_value = float(value)
+    except Exception:
+        numeric_value = 0.0
+
+    sign = '-' if numeric_value < 0 else ''
+    abs_value = abs(numeric_value)
+
+    for threshold, suffix in ((1e12, 'T'), (1e9, 'B'), (1e6, 'M'), (1e3, 'K')):
+        if abs_value >= threshold:
+            return f"{prefix}{sign}{abs_value / threshold:.2f}{suffix}"
+
+    return f"{prefix}{sign}{abs_value:.2f}"
 
 
 def _standardize_axis_title(title_text):
@@ -1141,7 +1203,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     metrics_query = f"""
     SELECT 
         SUM(transaction_count) as total_transactions,
-        ROUND(SUM(transaction_amount) / 1e12, 2) as total_amount_trillions
+        SUM(transaction_amount) as total_amount
     FROM aggregated_transaction
     WHERE 1=1 {state_condition} {year_condition} {quarter_condition}
     """
@@ -1180,21 +1242,21 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     with col1:
         st.metric(
             label="🔢 Total Transactions",
-            value=f"{metrics_df.iloc[0]['total_transactions'] / 1e9:.2f}B",
+            value=_format_compact_value(metrics_df.iloc[0]['total_transactions']),
             delta=f"+{growth_pct}% YoY"
         )
     
     with col2:
         st.metric(
             label="💰 Total Amount",
-            value=f"₹{metrics_df.iloc[0]['total_amount_trillions']:.2f}T",
+            value=_format_compact_value(metrics_df.iloc[0]['total_amount'], prefix='₹'),
             delta="Growing"
         )
     
     with col3:
         st.metric(
             label="👥 Registered Users",
-            value=f"{users_df.iloc[0]['total_users'] / 1e9:.2f}B",
+            value=_format_compact_value(users_df.iloc[0]['total_users']),
             delta="Active"
         )
     
@@ -1226,6 +1288,7 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
     """
     
     trends_df = qe.execute_query(conn, trends_query)
+    trends_df['transactions_billions'] = _safe_numeric_round(trends_df['total_transactions'] / 1e9, 2)
     
     col1, col2 = st.columns(2)
     
@@ -1233,22 +1296,31 @@ def show_home_page(conn, year_filter, quarter_filter, state_filter):
         fig = px.line(
             trends_df, 
             x='year', 
-            y='total_transactions',
+            y='transactions_billions',
             title='Total Transactions by Year',
             markers=True
         )
         fig.update_traces(
             line_color='#a78bfa',
             line_width=3,
-            marker=dict(size=10, color='#a78bfa')
+            marker=dict(size=10, color='#a78bfa'),
+            hovertemplate='Year: %{x}<br>Transactions: %{y:.2f}B<extra></extra>'
         )
+
+        if len(trends_df) == 1:
+            single_value = float(trends_df.iloc[0]['transactions_billions'])
+            padding = max(single_value * 0.05, 1)
+            yaxis_range = [single_value - padding, single_value + padding]
+        else:
+            yaxis_range = None
+
         fig.update_layout(
             plot_bgcolor='#1a1a1a',
             paper_bgcolor='#1a1a1a',
             font=dict(color='white', family='Poppins, sans-serif'),
             title_font=dict(size=16, color='white'),
             xaxis=dict(showgrid=False, color='white'),
-            yaxis=dict(gridcolor='#333333', color='white'),
+            yaxis=dict(gridcolor='#333333', color='white', title='Transactions (B)', range=yaxis_range),
             hovermode='x unified',
             margin=dict(l=40, r=20, t=50, b=40)
         )
@@ -1808,7 +1880,7 @@ def show_overview_section(case_id, conn, year_filter, quarter_filter, state_filt
         with col2:
             total_users = df.iloc[0]['total_users']
             if total_users is not None:
-                st.metric("👥 Total Users", f"{total_users / 1e6:.2f}M")
+                st.metric("👥 Total Users", _format_compact_value(total_users))
             else:
                 st.metric("👥 Total Users", "N/A")
         with col3:
@@ -1888,10 +1960,10 @@ def show_overview_section(case_id, conn, year_filter, quarter_filter, state_filt
             st.metric("🗺️ States", f"{states_count}")
         with col2:
             total_transactions = df.iloc[0]['total_transactions'] if df is not None and not df.empty and df.iloc[0]['total_transactions'] is not None else 0
-            st.metric("🔢 Transactions", f"{total_transactions / 1e9:.2f}B")
+            st.metric("🔢 Transactions", _format_compact_value(total_transactions))
         with col3:
             amount_billions = df.iloc[0]['amount_billions'] if df is not None and not df.empty and df.iloc[0]['amount_billions'] is not None else 0
-            st.metric("💰 Amount", f"₹{amount_billions:.2f}B")
+            st.metric("💰 Amount", _format_compact_value(amount_billions * 1e9, prefix='₹'))
 
 def show_trends_section(case_id, conn, year_filter, quarter_filter, state_filter):
     """Display trend analysis"""
